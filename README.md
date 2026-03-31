@@ -32,32 +32,57 @@ This repo documents that answer with reusable templates, routing examples and tr
 ## High-Level Topology
 
 ```mermaid
-flowchart LR
-    client[Client Network] --> edge[FRR Edge Router]
-    edge --> cp[Control Plane]
-    edge --> w1[Worker 1]
-    edge --> w2[Worker 2]
-    edge --> w3[Worker 3]
+flowchart TB
+    client[Client / User Network]
 
-    subgraph k8s[Kubernetes Cluster]
-      cp
-      w1
-      w2
-      w3
-      svc[LoadBalancer Services]
-      gw[Cilium Gateway API]
-      pods[Pod CIDRs]
+    subgraph edge_zone[Edge Zone]
+        edge[FRR Edge Router]
+        nat[Published Ports via iptables]
     end
 
-    w1 --> svc
-    w2 --> svc
-    w3 --> svc
-    w1 --> pods
-    w2 --> pods
-    w3 --> pods
-    gw --> svc
+    subgraph transport[Management / Underlay Network]
+        cp[Control Plane Node]
+        w1[Worker 1]
+        w2[Worker 2]
+        w3[Worker 3]
+    end
 
-    edge --> pub[Published Ports via iptables]
+    subgraph cluster[ Kubernetes Cluster ]
+        subgraph cilium_plane[Cilium Networking Plane]
+            bgp[Cilium BGP Control Plane]
+            ipam[Cilium LB IPAM Pools]
+            gw[Cilium Gateway API]
+        end
+
+        subgraph workloads[Workloads]
+            svc[LoadBalancer Services]
+            pods[Pod CIDRs]
+            routes[HTTPRoutes]
+        end
+    end
+
+    client --> edge
+    edge --> nat
+
+    edge <-. eBGP .-> cp
+    edge <-. eBGP .-> w1
+    edge <-. eBGP .-> w2
+    edge <-. eBGP .-> w3
+
+    cp --> bgp
+    w1 --> bgp
+    w2 --> bgp
+    w3 --> bgp
+
+    ipam --> svc
+    ipam --> gw
+    gw --> routes
+    routes --> svc
+
+    bgp -. advertises Pod CIDRs .-> edge
+    bgp -. advertises LB VIPs .-> edge
+    nat --> svc
+    svc --> pods
 ```
 
 ## How the Design Works
