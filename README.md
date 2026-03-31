@@ -1,24 +1,35 @@
-# Bare-Metal Kubernetes Networking with Cilium, BGP and FRR
+# Bare-Metal Kubernetes Networking with Cilium, BGP, FRR and Gateway API
 
-This repository documents a bare-metal Kubernetes networking pattern built around:
+This repository is a portfolio-style walkthrough of how I expose workloads from a bare-metal Kubernetes cluster without relying on cloud load balancers.
 
-- Kubernetes on private nodes
-- Cilium as CNI, kube-proxy replacement and Gateway API implementation
-- Cilium BGP Control Plane for advertising Pod CIDRs and `LoadBalancer` IPs
-- FRR on an edge router
-- `iptables` DNAT/SNAT on the router for selective north-south publishing
+The pattern is built around:
 
-The content is inspired by a live homelab cluster, but all addresses and examples in this repository are sanitized. No production or lab IPs are published here.
+- Cilium as CNI and kube-proxy replacement
+- Cilium BGP Control Plane for Pod CIDR and `LoadBalancer` IP advertisement
+- Cilium Gateway API for HTTP entrypoints
+- FRR as the upstream edge router
+- `iptables` on the router for selective north-south publishing
 
-## What This Repository Shows
+All examples are based on a real homelab setup, but the repository is fully sanitized. No real lab IPs, peer addresses or router details are published.
 
-- how to advertise Kubernetes `LoadBalancer` IPs over BGP without MetalLB
-- how to expose Pod CIDRs and service VIPs to an upstream router
-- how to combine Cilium Gateway API with dedicated `LoadBalancer` pools
-- how to publish selected services through an edge router with `iptables`
-- how to debug routing, BGP sessions, service advertisement and edge NAT
+## Why This Project Exists
 
-## Topology
+Most Kubernetes networking examples assume a cloud environment with managed load balancers. This repository focuses on a different problem:
+
+How do you expose services cleanly on bare metal when you control the routers, the address pools and the edge publishing rules?
+
+This repo documents that answer with reusable templates, routing examples and troubleshooting notes.
+
+## Highlights
+
+- advertises `LoadBalancer` VIPs over BGP without MetalLB
+- advertises Pod CIDRs from Kubernetes nodes to an upstream FRR router
+- uses dedicated Cilium IP pools for service allocation
+- exposes HTTP apps through Cilium Gateway API
+- selectively publishes services through router-level DNAT and SNAT
+- keeps examples safe for public sharing by replacing all real addressing data
+
+## High-Level Topology
 
 ```mermaid
 flowchart LR
@@ -49,122 +60,144 @@ flowchart LR
     edge --> pub[Published Ports via iptables]
 ```
 
-## Networking Model
+## How the Design Works
 
-The model documented here follows this split:
+The design splits responsibilities cleanly:
 
-- East-west pod networking is handled by Cilium.
-- Kubernetes services use Cilium `LoadBalancer` IPAM from dedicated pools.
-- Cilium BGP Control Plane advertises Pod CIDRs and `LoadBalancer` IPs to FRR.
-- The edge router learns those routes dynamically and forwards traffic to the cluster.
-- Public publishing is selective and explicit: only chosen services are exposed with `iptables` DNAT/SNAT on the router.
+- East-west traffic is handled by Cilium.
+- Service VIPs come from `CiliumLoadBalancerIPPool` resources.
+- Kubernetes nodes peer with the upstream router over eBGP.
+- Cilium advertises both Pod CIDRs and `LoadBalancer` IPs.
+- FRR installs routes dynamically.
+- The edge router exposes only selected applications through explicit NAT rules.
 
-This is useful when you want:
+This gives you:
 
-- full control over ingress paths
-- on-prem style routing instead of cloud LBs
-- static or semi-static service VIPs
-- a clean separation between cluster networking and edge publishing
+- deterministic service exposure
+- better visibility into packet flow
+- less manual route management
+- a practical on-prem alternative to cloud-native ingress patterns
 
-## Repository Layout
+## Repository Structure
 
-- `docs/architecture.md`: design decisions and traffic flow
-- `docs/router-edge-nat.md`: how the edge router publishes selected services
-- `docs/troubleshooting.md`: checks for Cilium, BGP, LB IPs and router state
-- `manifests/cilium/`: sanitized Cilium networking resources
+- `docs/architecture.md`: architectural decisions and traffic flow
+- `docs/router-edge-nat.md`: north-south publishing through the router
+- `docs/troubleshooting.md`: operational checks and failure scenarios
+- `manifests/cilium/`: sanitized Cilium BGP and IPAM examples
 - `manifests/gateway/`: sanitized Gateway API examples
-- `manifests/services/`: sample `LoadBalancer` services
-- `router/frr/`: FRR examples for the upstream router
-- `router/iptables/`: example `iptables` rules used to publish services
-- `scripts/`: helper scripts for FRR neighbor lifecycle
+- `manifests/services/`: sample `LoadBalancer` service definitions
+- `router/frr/`: FRR sample configuration
+- `router/iptables/`: NAT examples and helper script
+- `scripts/`: small router-side BGP helper scripts
 
-## Core Components
+## Core Building Blocks
 
-### 1. LoadBalancer IP pools
+### LoadBalancer IP pools
 
-Cilium assigns service VIPs from dedicated pools, for example:
+Cilium allocates service VIPs from dedicated pools. This lets you separate application classes, for example:
 
-- one pool for internal apps
-- one pool for edge-facing apps
+- public-facing services
+- internal-only service VIPs
 
-See [manifests/cilium/loadbalancer-ip-pools.yaml](manifests/cilium/loadbalancer-ip-pools.yaml).
+Example:
 
-### 2. BGP peering
+- [manifests/cilium/loadbalancer-ip-pools.yaml](manifests/cilium/loadbalancer-ip-pools.yaml)
 
-Each cluster node peers with the edge router using eBGP. The node side advertises:
+### BGP peering
+
+Each Kubernetes node peers with the upstream FRR router. The node side advertises:
 
 - Pod CIDRs
 - `LoadBalancer` IPs
 
-See [manifests/cilium/bgp-peering-policy.yaml](manifests/cilium/bgp-peering-policy.yaml) and [router/frr/frr.conf](router/frr/frr.conf).
+Examples:
 
-### 3. Gateway API
-
-Cilium implements Gateway API and can front selected workloads with a dedicated VIP from the pool.
-
-See [manifests/gateway/gateway.yaml](manifests/gateway/gateway.yaml) and [manifests/gateway/http-routes.yaml](manifests/gateway/http-routes.yaml).
-
-### 4. Edge NAT
-
-When a service should be reachable from another subnet or from a user-facing router IP, the edge router can expose it with targeted DNAT/SNAT.
-
-See [router/iptables/publish-service.sh](router/iptables/publish-service.sh).
-
-## Example Flows
-
-### LoadBalancer service
-
-1. A `Service` is created with `type: LoadBalancer`.
-2. Cilium allocates an IP from a pool.
-3. Cilium BGP advertises that IP to FRR.
-4. The edge router installs the route.
-5. Clients reach the service VIP directly.
+- [manifests/cilium/bgp-peering-policy.yaml](manifests/cilium/bgp-peering-policy.yaml)
+- [router/frr/frr.conf](router/frr/frr.conf)
 
 ### Gateway API
 
-1. A `Gateway` receives a dedicated VIP.
-2. `HTTPRoute` resources bind workloads behind the gateway.
-3. Cilium programs Envoy and BPF service handling.
-4. FRR learns the gateway VIP over BGP.
-5. Clients reach the application through the gateway IP.
+Cilium also acts as the Gateway API implementation, allowing a dedicated VIP to front multiple HTTP routes.
 
-### Published service through edge NAT
+Examples:
 
-1. The router receives traffic on a local address and port.
-2. `iptables` DNAT rewrites the destination to a cluster `LoadBalancer` IP.
-3. Return traffic is normalized with `SNAT` or `MASQUERADE`.
-4. The service stays reachable without exposing every VIP directly to users.
+- [manifests/gateway/gateway.yaml](manifests/gateway/gateway.yaml)
+- [manifests/gateway/http-routes.yaml](manifests/gateway/http-routes.yaml)
 
-## Design Notes
+### Edge NAT
 
-- The cluster can use overlay routing internally while still advertising VIP reachability north-south through BGP.
-- BGP is used here for route distribution, not for replacing all cluster networking primitives.
-- Edge NAT remains useful when you want stable user-facing entrypoints that differ from service VIPs.
-- This pattern is especially practical in homelabs, private datacenters and small bare-metal environments.
+Not every reachable VIP should be directly exposed. The edge router can front selected services with local ports and rewrite traffic toward cluster VIPs.
+
+Examples:
+
+- [router/iptables/example-rules.txt](router/iptables/example-rules.txt)
+- [router/iptables/publish-service.sh](router/iptables/publish-service.sh)
+
+## Typical Traffic Flows
+
+### 1. Service published as `LoadBalancer`
+
+1. A Kubernetes `Service` is created as `type: LoadBalancer`.
+2. Cilium allocates a VIP from the configured pool.
+3. Cilium advertises that VIP to the FRR router.
+4. The router installs the route.
+5. Clients reach the service through the advertised VIP.
+
+### 2. HTTP application exposed through Gateway API
+
+1. A `Gateway` gets a dedicated address from the IP pool.
+2. `HTTPRoute` resources attach backend services.
+3. Cilium programs the gateway datapath.
+4. The router learns the gateway VIP over BGP.
+5. Clients reach the application through the gateway address.
+
+### 3. Service exposed through a router-local port
+
+1. The router listens on a chosen local IP and TCP port.
+2. `iptables` performs DNAT to the service VIP.
+3. `SNAT` or `MASQUERADE` keeps return traffic symmetric.
+4. The workload stays reachable without exposing raw internal service addresses to end users.
+
+## What I Reused from the Real Lab
+
+This repository is based on patterns actively used in a working cluster:
+
+- Cilium BGP Control Plane
+- multiple `LoadBalancer` IP pools
+- FRR peering with bare-metal nodes
+- Gateway API for application routing
+- router-side NAT for selected services
+
+What is intentionally not included:
+
+- real IP addresses
+- raw router configs copied from the lab
+- direct `kubectl` output from the environment
+- exact public service inventory
 
 ## Getting Started
 
-1. Review the sanitized Cilium manifests under `manifests/cilium/`.
-2. Adjust placeholder ASNs, peer addresses and CIDRs for your own environment.
+1. Review the Cilium manifests under `manifests/cilium/`.
+2. Replace placeholder ASNs, peer addresses and CIDRs with your own values.
 3. Apply the Cilium resources.
-4. Configure FRR with the example in `router/frr/frr.conf`.
-5. Create `LoadBalancer` services or a `Gateway`.
-6. If required, publish selected services with the example router scripts.
+4. Configure FRR using the example under `router/frr/`.
+5. Create a `LoadBalancer` service or a `Gateway`.
+6. If needed, publish selected services with the router helper script.
 
 ## Validation Checklist
 
 - `kubectl get svc -A` shows `EXTERNAL-IP` values for `LoadBalancer` services
 - `kubectl get ciliumloadbalancerippools`
 - `kubectl get ciliumbgppeeringpolicies`
-- `cilium status --verbose`
+- `kubectl -n kube-system exec ds/cilium -- cilium status --verbose`
 - `vtysh -c "show bgp summary"`
 - `ip route`
 - `iptables -t nat -S`
 
-## Future Extensions
+## Future Improvements
 
-- dual-router HA with ECMP or VRRP
-- BFD for faster failure detection
-- BGP communities and policy filtering
-- Cilium L2 announcements for non-BGP segments
-- GitOps-managed router config generation
+- dual-router HA with VRRP or ECMP
+- BFD for faster convergence
+- BGP community-based route control
+- GitOps-managed router configuration
+- a dedicated lab topology diagram with VLANs and edge zones
