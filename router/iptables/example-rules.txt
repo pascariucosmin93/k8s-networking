@@ -1,0 +1,9 @@
+# Publish one application on a router-local port and translate it to a Cilium
+# LoadBalancer service VIP.
+
+iptables -t nat -A PREROUTING -d 192.0.2.10/32 -p tcp --dport 8095 -j DNAT --to-destination 198.51.100.30:80
+iptables -t nat -A OUTPUT -d 192.0.2.10/32 -p tcp --dport 8095 -j DNAT --to-destination 198.51.100.30:80
+iptables -t nat -A POSTROUTING -d 198.51.100.30/32 -p tcp --dport 80 -j SNAT --to-source 192.0.2.10
+iptables -A FORWARD -d 198.51.100.30/32 -p tcp --dport 80 -j ACCEPT
+iptables -A FORWARD -s 198.51.100.30/32 -p tcp --sport 80 -j ACCEPT
+

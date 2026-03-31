@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: example-app
+  namespace: demo
+  labels:
+    app: example-app
+    cilium.io/lb-pool: lb-pool-public
+    networking.example.io/advertise: "true"
+spec:
+  type: LoadBalancer
+  selector:
+    app: example-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+
